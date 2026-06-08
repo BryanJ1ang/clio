@@ -157,3 +157,68 @@ TEST_F(MPTExtTests, OnInitialDataWithMultipleHolders)
 
     ext_.onInitialData(data);
 }
+
+// The combined ledger pass writes the new MPT transaction index rows (both shapes) alongside the
+// existing holder index, all in the same pass (PR2 guards the MPTExt extension).
+TEST_F(MPTExtTests, OnLedgerDataWritesTransactionIndexAndHolders)
+{
+    auto const data = createTestData();
+
+    // Holder index output is unchanged by the new tx-index path.
+    EXPECT_CALL(*backend_, writeMPTHolders).WillOnce([](auto const& holders) {
+        EXPECT_EQ(holders.size(), 1);
+    });
+
+    // The single MPT-touching transaction (the AUTHORIZE) produces one index row per shape.
+    EXPECT_CALL(*backend_, writeMPTTransactions).WillOnce([](auto const& txs) {
+        ASSERT_EQ(txs.size(), 1);
+        EXPECT_EQ(txs[0].txType, "MPTokenAuthorize");
+        EXPECT_FALSE(txs[0].accounts.empty());
+    });
+    EXPECT_CALL(*backend_, writeAccountMPTTransactions).WillOnce([](auto const& txs) {
+        EXPECT_EQ(txs.size(), 1);
+    });
+
+    ext_.onLedgerData(data);
+}
+
+// The initial-load pass also populates the transaction index (parity with onLedgerData).
+TEST_F(MPTExtTests, OnInitialDataWritesTransactionIndex)
+{
+    auto const data = createTestData();
+
+    EXPECT_CALL(*backend_, writeMPTHolders).WillOnce([](auto const& holders) {
+        EXPECT_EQ(holders.size(), 1);
+    });
+    EXPECT_CALL(*backend_, writeMPTTransactions).WillOnce([](auto const& txs) {
+        EXPECT_EQ(txs.size(), 1);
+    });
+    EXPECT_CALL(*backend_, writeAccountMPTTransactions).WillOnce([](auto const& txs) {
+        EXPECT_EQ(txs.size(), 1);
+    });
+
+    ext_.onInitialData(data);
+}
+
+// A ledger with no MPT-touching transactions writes no index rows at all.
+TEST_F(MPTExtTests, OnLedgerDataWithoutMptWritesNoIndexRows)
+{
+    auto transactions = std::vector{
+        util::createTransaction(ripple::TxType::ttAMM_CREATE),
+    };
+    auto const header = createLedgerHeader(kLedgerHash, kSeq);
+    auto const data = etl::model::LedgerData{
+        .transactions = std::move(transactions),
+        .objects = {},
+        .successors = {},
+        .edgeKeys = {},
+        .header = header,
+        .rawHeader = {},
+        .seq = kSeq
+    };
+
+    EXPECT_CALL(*backend_, writeMPTTransactions).Times(0);
+    EXPECT_CALL(*backend_, writeAccountMPTTransactions).Times(0);
+
+    ext_.onLedgerData(data);
+}

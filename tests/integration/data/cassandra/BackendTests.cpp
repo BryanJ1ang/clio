@@ -1631,6 +1631,70 @@ TEST_F(BackendCassandraMPTTest, RoundTripBothShapesAndTxTypeFilter)
     });
 }
 
+// A ledger replay (or a backfill double-read) re-runs the same extraction and rewrites identical
+// deterministic-PK rows. This must converge to a single row per clustering key, never duplicates.
+// Also covers the partial-write-then-full-replay path: a first pass that committed only a subset of
+// accounts, followed by a full re-extraction, ends in the same state as a single clean pass.
+TEST_F(BackendCassandraMPTTest, ReplayUpsertsAreIdempotent)
+{
+    runSpawn([this](boost::asio::yield_context yield) {
+        auto const mptId = makeMptId();
+        auto const account = makeAccount(0x42);
+        auto const secondAccount = makeAccount(0x43);
+        std::uint32_t const seq = 100;
+
+        setupLedgerRange(seq);
+
+        auto const hash = makeHash(0x01);
+        writeTxBlob(hash, seq);
+
+        // First pass crashed after committing only the issuer-side account row.
+        MPTTransactionsData const partial{
+            .mptID = mptId,
+            .accounts = {account},
+            .txType = kTX_TYPE_A,
+            .ledgerSequence = seq,
+            .transactionIndex = 1,
+            .txHash = hash
+        };
+        backend_->writeMPTTransactions({partial});
+        backend_->writeAccountMPTTransactions({partial});
+        backend_->waitForWritesToFinish();
+
+        // Full re-extraction on restart rewrites every row, then a pure replay repeats it verbatim.
+        MPTTransactionsData const full{
+            .mptID = mptId,
+            .accounts = {account, secondAccount},
+            .txType = kTX_TYPE_A,
+            .ledgerSequence = seq,
+            .transactionIndex = 1,
+            .txHash = hash
+        };
+        for (int pass = 0; pass < 2; ++pass) {
+            backend_->writeMPTTransactions({full});
+            backend_->writeAccountMPTTransactions({full});
+        }
+        backend_->waitForWritesToFinish();
+
+        // Issuance-wide: exactly one row despite three writes of (mptId, seq, 1).
+        {
+            auto [txns, cursor] =
+                backend_->fetchMPTTransactions(mptId, std::nullopt, 100, false, {}, yield);
+            EXPECT_EQ(txns.size(), 1);
+            EXPECT_FALSE(cursor);
+        }
+        // Each affected account: exactly one row (the partial pass's row was upserted, not
+        // appended).
+        for (auto const& acct : {account, secondAccount}) {
+            auto [txns, cursor] = backend_->fetchAccountMPTTransactions(
+                mptId, acct, std::nullopt, 100, false, {}, yield
+            );
+            EXPECT_EQ(txns.size(), 1);
+            EXPECT_FALSE(cursor);
+        }
+    });
+}
+
 TEST_F(BackendCassandraMPTTest, DescendingOrderForwardAndReverse)
 {
     runSpawn([this](boost::asio::yield_context yield) {

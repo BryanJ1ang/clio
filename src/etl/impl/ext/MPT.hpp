@@ -3,6 +3,7 @@
 #include "data/BackendInterface.hpp"
 #include "etl/Models.hpp"
 #include "util/log/Logger.hpp"
+#include "util/prometheus/Counter.hpp"
 
 #include <xrpl/basics/strHex.h>
 #include <xrpl/protocol/AccountID.h>
@@ -10,6 +11,7 @@
 #include <xrpl/protocol/TxMeta.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace etl::impl {
@@ -17,6 +19,7 @@ namespace etl::impl {
 class MPTExt {
     std::shared_ptr<BackendInterface> backend_;
     util::Logger log_{"ETL"};
+    std::reference_wrapper<util::prometheus::CounterInt> indexRowsWritten_;
 
 public:
     explicit MPTExt(std::shared_ptr<BackendInterface> backend);
@@ -33,6 +36,9 @@ public:
 private:
     void
     writeMPTHoldersFromTransactions(model::LedgerData const& data);
+
+    void
+    writeMPTTransactions(model::LedgerData const& data);
 };
 
 }  // namespace etl::impl
